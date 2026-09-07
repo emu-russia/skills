@@ -98,3 +98,39 @@ When a signal should be driven but the waveform shows `z`/`x`, parse the VCD and
 - Only `z`/`x` *after* time 0 matter; the `$dumpvars` initial block may legitimately show `x`.
 - A stuck-at-zero counter is a separate concern from z: check whether its clock/step/load inputs are toggling, not just that it's driven.
 
+
+## DMG-CPU SoC netlists (emu-russia/dmgcpu) - extra notes
+
+Worked out while bringing up the PPU regression testbench (`HDL/soc/icarus/ppu`, issue emu-russia/dmgcpu#390).
+
+- **Bidirectional-bus aliases must be merged for Icarus.** The Deroute-style
+  netlists (`ppu1.v`/`ppu2.v`, module lib `dmglib.v`) alias bus bits with
+  one-way statements: `assign d[7] = w79;` etc. Under Icarus this is a real
+  driver, so CPU write data never reaches the register latches (they read
+  `w79`). Preprocess: rename `w79` → `d[7]` everywhere, delete the alias and
+  the orphaned `wire w79;`. Tool in the repo: `merge_bus_aliases.py`
+  (only touches `d/md/nma/n_oama/n_oamb`), generates `ppu1_merged.v`/
+  `ppu2_merged.v`.
+- **`notif0/1` inverting tristates (precharged "inverse hold" buses):**
+  the committed `x = ~x` body is a self-referential loop that never drives;
+  the working body is `x = ~a` while enabled **with `===` enable compares**
+  (`(n_ena === 1'b0)`, `(ena === 1'b1)`) so an uninitialized enable does not
+  put `x` on the bus. Note: const-0 cells (e.g. `notif0` with `a = const0`)
+  act as *active precharge* drivers (they pull the wire high) - do not
+  switch to discharge-only semantics without also adding pull-ups on every
+  notif-driven net, or scan counters/addresses will read back `x` from
+  floating nodes.
+- **Level-sensitive register latches race the bus precharge.** After a CPU
+  write strobe falls, keep the data valid ~8 ns (`assign d = (stb|hold) ?
+  data : z`) or the latches capture the precharged `1`s.
+- **OAM macro bring-up.** The repo `oam.v` is an empty stub. For the mode-2
+  scan a behavioral model with *bitline hold* (drive the last word between
+  reads; release only for writes) is closer to reality than tri-state z;
+  the byte↔port layout and precharge/capture phase timing are still open
+  research (see wiki/soc/ppu2.md) - cross-check against @msinger's
+  schematics/dmg-sim before trusting sprite waveforms.
+- **Wave tooling:** a dependency-free VCD→PNG renderer (`vcd2png.py`,
+  stdlib + Pillow, Windows fonts for labels) and a v3.3.128 `.gtkw` save
+  generator (`mk_gtkw.py`) live in `HDL/soc/icarus/ppu/`; see `waves.md`.
+  Icarus dumps vector values with leading zeros stripped (`b0` for a 5-bit
+  zero), parse widths from the `$var` declarations.
